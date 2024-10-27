@@ -6,7 +6,6 @@ require "lua_utils"
 local json = require "dkjson"
 local alert_utils = require "alert_utils"
 
-
 local webhook = {
    name = "Webhook",
    endpoint_params = {
@@ -14,7 +13,6 @@ local webhook = {
       { param_name = "webhook_sharedsecret", optional = true },
       { param_name = "webhook_username", optional = true },
       { param_name = "webhook_password", optional = true },
-      -- TODO: configure severity (Errors, Errors and Warnings, All)
    },
    endpoint_template = {
       script_key = "webhook",
@@ -37,7 +35,7 @@ local MAX_ALERTS_PER_REQUEST = 10
 
 -- ##############################################
 
--- @brief Returns the desided formatted output for recipient params
+-- @brief Returns the desired formatted output for recipient params
 function webhook.format_recipient_params(recipient_params)
    return string.format("(%s)", webhook.name)
 end
@@ -57,18 +55,64 @@ end
 
 -- ##############################################
 
+-- Format alert into a standardized structure
+local function formatAlert(alert_json)
+  local alert = json.decode(alert_json)
+  if not alert then return nil end
+  
+  -- Create a standardized alert structure
+  return {
+    id = alert.alert_id,
+    timestamp = alert.tstamp,
+    timestamp_end = alert.tstamp_end,
+    type = alert_consts.alertTypeLabel(tonumber(alert.alert_id), true, alert.entity_id),
+    severity = alert.alert_severity,
+    score = alert.score,
+    entity = {
+      type = alert.entity_id,
+      value = alert.entity_val
+    },
+    message = alert.alert,
+    details = alert.info,
+    source = {
+      interface_id = alert.interface_id,
+      probe_ip = alert.probe_ip
+    },
+    metadata = alert.metadata or {}
+  }
+end
+
 function webhook.sendMessage(alerts, settings)
   if isEmptyString(settings.url) then
     return false
   end
 
+  -- Format alerts into standardized structure
+  local formatted_alerts = {}
+  for _, alert in ipairs(alerts) do
+    local formatted = formatAlert(alert)
+    if formatted then
+      table.insert(formatted_alerts, formatted)
+    end
+  end
+
   local message = {
     version = webhook.API_VERSION,
+    timestamp = os.time(),
     sharedsecret = settings.sharedsecret,
-    alerts = alerts,
+    alerts = formatted_alerts
   }
 
-  local json_message = json.encode(message)
+  -- Use dkjson with specific formatting options for consistency
+  local json_message = json.encode(message, {
+    indent = true,  -- Pretty print
+    keyorder = {    -- Consistent key ordering
+      "version",
+      "timestamp", 
+      "sharedsecret",
+      "alerts"
+    }
+  })
 
   local rc = false
   local retry_attempts = 3
@@ -122,14 +166,7 @@ function webhook.dequeueRecipientAlerts(recipient, budget)
       break
     end
 
-    local alerts = {}
-
-    for _, json_message in ipairs(notifications) do
-      local alert = json.decode(json_message)
-      table.insert(alerts, alert)
-    end
-
-    if not webhook.sendMessage(alerts, settings) then
+    if not webhook.sendMessage(notifications, settings) then
       return {success=false, error_message="Unable to send alerts to the webhook"}
     end
 
@@ -162,4 +199,3 @@ end
 -- ##############################################
 
 return webhook
-
